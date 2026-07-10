@@ -1,0 +1,9 @@
+*.pyc
+__pycache__/
+.DS_Store
+DTset/
+DTset_organizado*/
+test_*.txt
+debug_*.txt
+*.json
+extraido.txt
