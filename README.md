@@ -148,10 +148,13 @@ python agregar_sexo_docs.py --consultar <ruta_transcripciones>   # arma el CSV
 python agregar_sexo_docs.py --inyectar <ruta_transcripciones>    # embebe sexo en los .doc
 ```
 
-Guarda copias originales en `backup_originales/` y no vuelve a consultar nombres ya resueltos. Requiere la variable de entorno `GENDERIZE_API_KEY` para evitar el rate-limit de la API.
+Guarda copias originales en `backup_originales/` y no vuelve a consultar nombres ya resueltos.
+
+> **Cuando necesitas una API key**: si tus transcripciones no traen el sexo en la linea `@ Participante` (no terminan en `= H`/`= M`), el script principal usa como respaldo el archivo `sexo_participantes.csv` al lado de las transcripciones. Si ese archivo no existe todavía, hay que generarlo consultando genderize.io (con `--consultar` o `--inyectar`), y la API sin key tiene rate-limit (límite de consultas diarias). Para levantarlo se requiere la variable de entorno `GENDERIZE_API_KEY`. Sin key y sin cache CSV, el sexo queda marcado como `D` (desconocido).
 
 ## Notas para el dataset completo
 
 El 76.3% de utterances en las transcripciones no tienen audio asociado en la muestra (6,316 utterances totales, solo 1,500 con audio). Esto es esperable para una muestra. Con el dataset completo se espera que la tasa de matching mejore significativamente.
 
 El script asume la misma estructura de nombres de archivo: `{N}.{short_name}.wav`. Las carpetas de edad se generan automaticamente segun las edades que aparezcan en los headers de las transcripciones.
+
