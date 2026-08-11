@@ -1,6 +1,24 @@
 # Dataset TTS - Transformacion de corpus conversacional
 
-Transformacion de un corpus de conversaciones grabadas en un dataset estructurado para entrenamiento de TTS. Cada utterance individual con audio asociado se organiza por intervalos de edad de 5 anos del hablante que lo emitio.
+Transformacion de un corpus de conversaciones grabadas en un dataset estructurado para entrenamiento de TTS. Cada utterance individual con audio asociado se organiza por la edad exacta del hablante que lo emitio.
+
+## Instalacion
+
+```bash
+pip install pywin32>=306
+```
+
+## Uso
+
+```bash
+python organizar_dataset.py
+```
+
+El script pedira interactivamente:
+1. Ruta de la carpeta con los audios (.wav)
+2. Ruta de la carpeta con las transcripciones (.doc)
+
+Valida que las rutas existan, contengan archivos del formato esperado, y da 3 intentos antes de salir. El output se crea en `DTset_organizado/` en el mismo directorio donde se ejecuta el script.
 
 ## Datos de entrada
 
@@ -40,53 +58,72 @@ Los archivos de audio tienen el formato `{turno}.{short_name}.wav` (ej: `1.Cam.w
 
 ### Asignacion de edad
 
-Para cada utterance se obtiene la letra del hablante, su edad desde el header, y se calcula el intervalo de 5 anos: `(edad // 5) * 5` a `((edad // 5) * 5) + 4`.
+Para cada utterance se obtiene la letra del hablante y su edad desde el header. Los audios se organizan en carpetas por edad exacta.
 
 ### Unificacion de nombres
 
 - Cocina -> Coc (unificado con el nombre del PDF)
 
+### Determinacion de sexo
+
+El sexo puede venir de dos fuentes, en este orden:
+
+1. Del propio doc, si la linea `@ Participante` ya trae el valor al final: `@ Participante: R = Ruben = 18 = H` (formato `H` hombre, `M` mujer, `D` desconocido).
+2. De un archivo `sexo_participantes.csv` colocado junto a las transcripciones, con columnas `nombre,sexo,probabilidad,fuente`. El nombre se normaliza quitando acentos y quedandose con el primer token (ej: `Eva Rosa` -> `Eva`). Se usa si el doc no trae el sexo.
+
+Este cache se genera con la API genderize.io. Hay un helper opcional `agregar_sexo_docs.py` que, dada una carpeta de transcripciones, consulta genderize.io para cada participante y reescribe las lineas `@ Participante` embebiendo el sexo dentro del propio .doc. Asi el sexo queda fisicamente en la transcripcion y el script principal lo lee directa.
+
+Los nombres que la API no reconoce o ante fallos de red se marcan como `D` (desconocido).
+
 ## Output generado
 
 ```
-DTset_organizado_v2/
-  {intervalo_edad}/
+DTset_organizado/
+  metadata.csv
+  {edad}/
     {short_name}_{utterance_N}.wav
     {short_name}_{utterance_N}.txt
 ```
+
+El archivo `metadata.csv` contiene todas las entradas con columnas: `short_name`, `utt_num`, `edad`, `sexo`, `texto`, `archivo`. El path en `archivo` es relativo a la raiz del output, permitiendo que cualquier dataloader acceda directamente sin depender de la estructura de carpetas. El valor de `sexo` es `H` (hombre), `M` (mujer) o `D` (desconocido).
 
 ## Estadisticas finales
 
 | Metrica | Valor |
 |---|---|
 | Total utterances en transcripciones | 6,316 |
-| Pares audio+texto generados | 1,500 |
-| Tasa de matching | 23.7% |
-| Intervalos de edad creados | 19 |
+| Pares audio+texto generados | 1,501 |
+| Tasa de matching | 23.8% |
+| Edades unicas representadas | 53 |
+| Hombres | 590 |
+| Mujeres | 911 |
+| Sexo desconocido | 0 |
 
-Distribucion por intervalo de edad:
+Distribucion por edad exacta:
 
-| Intervalo | Cantidad | Edades representativas |
-|---|---|---|
-| 15-19 | 110 | 17, 18, 19 |
-| 20-24 | 312 | 20, 22, 23 |
-| 25-29 | 327 | 26, 27 |
-| 30-34 | 171 | 32, 33, 34 |
-| 35-39 | 5 | 35, 36, 37, 38, 39 |
-| 40-44 | 49 | 40, 43, 44 |
-| 45-49 | 1 | 46 |
-| 50-54 | 9 | 50, 51, 52, 53, 54 |
-| 55-59 | 16 | 55, 56, 57 |
-| 70-74 | 27 | 70, 71, 73, 74 |
-| 75-79 | 53 | 75, 76, 77, 78, 79 |
-| 80-84 | 2 | 80, 82 |
-| 85-89 | 46 | 85, 87, 89 |
-| 90-94 | 4 | 90, 92, 93 |
-| 95-99 | 7 | 95, 96, 97, 98 |
-| 100-104 | 229 | 99, 101, 103, 104 |
-| 105-109 | 58 | 105, 106, 107, 108 |
-| 110-114 | 60 | 110, 111, 112, 113, 114 |
-| 120-124 | 14 | 120, 121, 122 |
+| Edad | Cantidad | Edad | Cantidad | Edad | Cantidad |
+|---|---|---|---|---|---|
+| 18 | 110 | 42 | 16 | 100 | 7 |
+| 20 | 97 | 43 | 3 | 102 | 3 |
+| 22 | 129 | 44 | 16 | 103 | 115 |
+| 23 | 73 | 45 | 1 | 104 | 104 |
+| 24 | 13 | 53 | 2 | 106 | 39 |
+| 25 | 1 | 54 | 7 | 107 | 3 |
+| 26 | 206 | 58 | 1 | 109 | 16 |
+| 27 | 50 | 59 | 15 | 110 | 23 |
+| 28 | 39 | 73 | 6 | 111 | 33 |
+| 29 | 31 | 74 | 21 | 112 | 2 |
+| 30 | 17 | 75 | 4 | 113 | 2 |
+| 31 | 16 | 76 | 1 | 120 | 6 |
+| 32 | 26 | 77 | 30 | 121 | 8 |
+| 33 | 24 | 78 | 15 | | |
+| 34 | 88 | 79 | 3 | | |
+| 35 | 3 | 83 | 1 | | |
+| 39 | 2 | 84 | 1 | | |
+| 40 | 8 | 85 | 14 | | |
+| 41 | 7 | 86 | 32 | | |
+| | | 93 | 4 | | |
+| | | 99 | 7 | | |
 
 ## Decisiones tecnicas
 
@@ -98,16 +135,23 @@ El texto se limpia eliminando anotaciones entre corchetes `[N ... ]N`, marcas de
 
 ## Script generador
 
-El script `organizar_dataset_v2.py` contiene todo el pipeline y esta configurado para reutilizarse con el dataset completo:
+El script `organizar_dataset.py` contiene todo el pipeline. No tiene rutas fijas: al ejecutarse pide (1) la carpeta de audios y (2) la carpeta de transcripciones, y crea `DTset_organizado/` en el directorio actual. Incluye validacion de formato y hasta 3 reintentos por ruta erronea.
 
-```python
-BASE_DIR = r"D:\Marcos\Prog\TTS"    # Ruta base
-DTset_DIR = "DTset"                   # Subcarpeta con Audios/ y Transcripcion/
-OUT_DIR = "DTset_organizado_v2"       # Subcarpeta de salida
+Para no re-abrir Word en cada ejecucion, el texto extraido de cada transcripcion se cachea en `DTset_organizado/_cache_text/`. El cache se regenera solo si el .doc cambia.
+
+## Helper opcional para sexo
+
+`agregar_sexo_docs.py` es opcional y no forma parte del pipeline principal. Su objetivo es reescribir las transcripciones para embeker el sexo en la linea `@ Participante` (consultando la API genderize.io con un timeout y reintentos). Uso:
+
 ```
+python agregar_sexo_docs.py --consultar <ruta_transcripciones>   # arma el CSV
+python agregar_sexo_docs.py --inyectar <ruta_transcripciones>    # embebe sexo en los .doc
+```
+
+Guarda copias originales en `backup_originales/` y no vuelve a consultar nombres ya resueltos. Requiere la variable de entorno `GENDERIZE_API_KEY` para evitar el rate-limit de la API.
 
 ## Notas para el dataset completo
 
 El 76.3% de utterances en las transcripciones no tienen audio asociado en la muestra (6,316 utterances totales, solo 1,500 con audio). Esto es esperable para una muestra. Con el dataset completo se espera que la tasa de matching mejore significativamente.
 
-El script asume la misma estructura de nombres de archivo: `{N}.{short_name}.wav`. Los intervalos de edad se generan automaticamente segun las edades que aparezcan.
+El script asume la misma estructura de nombres de archivo: `{N}.{short_name}.wav`. Las carpetas de edad se generan automaticamente segun las edades que aparezcan en los headers de las transcripciones.
