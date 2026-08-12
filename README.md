@@ -80,12 +80,26 @@ Los nombres que la API no reconoce o ante fallos de red se marcan como `D` (desc
 ```
 DTset_organizado/
   metadata.csv
+  speakers.csv
+  train.txt
+  eval.txt
+  _cache_text/
   {edad}/
     {short_name}_{utterance_N}.wav
     {short_name}_{utterance_N}.txt
 ```
 
-El archivo `metadata.csv` contiene todas las entradas con columnas: `short_name`, `utt_num`, `edad`, `sexo`, `texto`, `archivo`. El path en `archivo` es relativo a la raiz del output, permitiendo que cualquier dataloader acceda directamente sin depender de la estructura de carpetas. El valor de `sexo` es `H` (hombre), `M` (mujer) o `D` (desconocido).
+El archivo `metadata.csv` contiene todas las entradas con columnas: `short_name`, `utt_num`, `speaker_id`, `speaker_code`, `nombre`, `edad`, `sexo`, `texto`, `archivo`, `duracion`. El path en `archivo` es relativo a la raiz del output, permitiendo que cualquier dataloader acceda directamente sin depender de la estructura de carpetas. El valor de `sexo` es `H` (hombre), `M` (mujer) o `D` (desconocido).
+
+### Voces de referencia (no personajes)
+
+Las 40 personas del corpus son **material de referencia**, no los personajes que se van a sintetizar. `speakers.csv` es el registro de voces-referencia (una fila por persona): `speaker_id`, `nombre`, `edad`, `sexo`, `n_clips`, `duracion_total`. Cada personaje final se construye por **interpolacion/extrapolacion** de los metadatos (edad, sexo) sobre este registro.
+
+El `speaker_id` es el primer nombre normalizado (sin acentos). Si el mismo nombre aparece con **edades distintas** en grabaciones diferentes, se considera que son personas distintas y el id se desambigua por doc (ej: `carlos@GB006`, `carlos@TC040`), evitando fusionar voces de referencia diferentes.
+
+`train.txt` y `eval.txt` son filelists con formato `archivo|texto|speaker_id|edad|sexo`, y el split es **por persona** (hablantes completos, sin compartir voces entre train y eval). La fraccion de eval se ajusta con `--eval-frac` (default 0.2).
+
+El script imprime las **referencias debiles**: combos `(edad, sexo)` con pocos clips o una sola voz de referencia, que son las zonas donde el modelo tendra que interpolar mas.
 
 ## Estadisticas finales
 
@@ -127,7 +141,7 @@ Distribucion por edad exacta:
 
 ## Decisiones tecnicas
 
-Para la extraccion de .doc se descarto olefile porque producia texto con artefactos de codificacion. Se opto por win32com.client (Word COM) que extrae el texto limpio con la codificacion correcta. Se maneja el conflicto COM cerrando y forzando la terminacion de WINWORD.EXE entre archivos.
+Para la extraccion de .doc se descarto olefile porque producia texto con artefactos de codificacion. Se opto por win32com.client (Word COM) que extrae el texto limpio con la codificacion correcta. Para acelerar la extraccion se reutiliza una sola instancia de Word para todos los documentos (la abrir Word por archivo costaba ~2x); si una instancia se cuelga se fuerza `taskkill` y se reabre. El texto extraido se cachea en `_cache_text/` para que ejecuciones posteriores sean instantaneas.
 
 Solo se incluyen utterances con patron `((N ...))N` (doble parentesis + numero de cierre). Se ignoran utterances que no tengan archivo de audio correspondiente o cuyo hablante no tenga edad registrada en el header.
 

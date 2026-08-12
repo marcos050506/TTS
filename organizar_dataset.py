@@ -1,4 +1,5 @@
-import os, re, shutil, sys, subprocess, csv, unicodedata
+import os, re, shutil, sys, subprocess, csv, unicodedata, wave, argparse, time
+from collections import Counter, defaultdict
 
 import win32com.client
 
@@ -20,34 +21,39 @@ def cargar_sexo_cache(transc_dir):
                 cache[row["nombre"]] = row["sexo"]
     return cache
 
-def doc_to_txt_safe(doc_path):
-    def _extract():
-        word = win32com.client.Dispatch("Word.Application")
-        try: word.Visible = False
-        except: pass
-        try: word.DisplayAlerts = False
-        except: pass
-        doc = word.Documents.Open(doc_path)
-        text = doc.Content.Text
-        doc.Close(False)
-        return text
-    try:
-        return _extract()
-    except:
-        try:
-            subprocess.run(["taskkill", "/f", "/im", "WINWORD.EXE"], capture_output=True, timeout=5)
-        except: pass
-        import time; time.sleep(2)
-        return _extract()
+def abrir_word():
+    word = win32com.client.Dispatch("Word.Application")
+    try: word.Visible = False
+    except: pass
+    try: word.DisplayAlerts = False
+    except: pass
+    return word
 
-def get_doc_text(doc_path, cache_dir):
+def matar_word():
+    try:
+        subprocess.run(["taskkill", "/f", "/im", "WINWORD.EXE"], capture_output=True, timeout=5)
+    except: pass
+
+def cerrar_word(word):
+    try: word.Quit(False)
+    except: pass
+
+def doc_to_txt(word, doc_path):
+    doc = word.Documents.Open(doc_path, ConfirmConversions=False, ReadOnly=True,
+                              AddToRecentFiles=False)
+    try:
+        return doc.Content.Text
+    finally:
+        doc.Close(False)
+
+def get_doc_text(doc_path, cache_dir, word):
     cache_file = os.path.join(cache_dir, os.path.basename(doc_path) + ".txt")
     fresh = os.path.isfile(cache_file) and \
         os.path.getmtime(cache_file) >= os.path.getmtime(doc_path)
     if fresh:
         with open(cache_file, "r", encoding="utf-8") as f:
             return f.read()
-    text = doc_to_txt_safe(doc_path)
+    text = doc_to_txt(word, doc_path)
     os.makedirs(cache_dir, exist_ok=True)
     with open(cache_file, "w", encoding="utf-8") as f:
         f.write(text)
@@ -93,6 +99,32 @@ def parse_transcription(text):
                 })
 
     return short_name, speakers, utterances
+
+def duracion_wav(path):
+    try:
+        with wave.open(path, "rb") as w:
+            return round(w.getnframes() / w.getframerate(), 4)
+    except Exception:
+        return None
+
+def split_speakers(spk, frac):
+    buckets = defaultdict(list)
+    for sid, s in spk.items():
+        buckets[(s["sexo"], s["edad"])].append(sid)
+    eval_ids, train_ids = set(), set()
+    for ids in buckets.values():
+        ids = sorted(ids)
+        if len(ids) >= 2:
+            k = max(1, int(round(len(ids) * frac)))
+        else:
+            k = 0
+        eval_ids.update(ids[:k])
+    train_ids = set(spk) - eval_ids
+    if not eval_ids and train_ids:
+        heavy = max(spk, key=lambda sid: spk[sid]["n_clips"])
+        eval_ids.add(heavy)
+        train_ids.discard(heavy)
+    return sorted(train_ids), sorted(eval_ids)
 
 def scan_audios(audios_dir):
     audio_map = {}
@@ -145,7 +177,7 @@ def pedir_ruta(mensaje, validador):
             print("  Demasiados intentos fallidos. Saliendo.")
             sys.exit(1)
 
-def organize():
+def organize(eval_frac=0.2):
     print("=== ORGANIZADOR DE DATASET TTS ===\n")
 
     audios_dir = pedir_ruta(
@@ -174,14 +206,26 @@ def organize():
     docs_data = []
     total_utterances = 0
 
+    word = None
+    t_inicio = time.time()
     for fname in doc_files:
         doc_path = os.path.join(transc_dir, fname)
         print(f"  {fname}...", end=" ", flush=True)
 
-        try:
-            text = get_doc_text(doc_path, cache_dir)
-        except Exception as e:
-            print(f"ERROR: {e}", flush=True)
+        text = None
+        for intento in range(2):
+            try:
+                if word is None:
+                    word = abrir_word()
+                text = get_doc_text(doc_path, cache_dir, word)
+                break
+            except Exception as e:
+                matar_word()
+                word = None
+                time.sleep(2)
+                if intento == 1:
+                    print(f"ERROR: {e}", flush=True)
+        if text is None:
             continue
 
         short_name, speakers, utterances = parse_transcription(text)
@@ -192,6 +236,10 @@ def organize():
         docs_data.append((short_name, speakers, utterances))
         total_utterances += len(utterances)
         print(f"{len(utterances)} utterances, {len(speakers)} hablantes", flush=True)
+
+    if word is not None:
+        cerrar_word(word)
+    print(f"  Extraccion de {len(doc_files)} .doc en {time.time() - t_inicio:.1f} s", flush=True)
 
     sexo_cache = cargar_sexo_cache(transc_dir)
     if sexo_cache:
@@ -207,6 +255,7 @@ def organize():
     print("\nOrganizando pares audio+texto...", flush=True)
     matched = 0
     metadata_rows = []
+    ages_por_persona = defaultdict(set)
 
     for short_name, speakers, utterances in docs_data:
         for utt in utterances:
@@ -224,6 +273,10 @@ def organize():
 
             age = info["edad"]
             sexo = info.get("sexo", "D")
+            nombre = info["nombre"]
+            speaker_id = normalizar_nombre(nombre)
+            ages_por_persona[speaker_id].add(age)
+            dur = duracion_wav(audio_path)
 
             age_str = str(age)
             out_folder = os.path.join(out_dir, age_str)
@@ -239,20 +292,105 @@ def organize():
             metadata_rows.append({
                 "short_name": short_name,
                 "utt_num": utt_num,
+                "speaker_id": speaker_id,
+                "speaker_code": speaker,
+                "nombre": nombre,
                 "edad": age,
                 "sexo": sexo,
                 "texto": utt_text,
                 "archivo": f"{age_str}/{new_audio_name}",
+                "duracion": dur if dur is not None else "",
             })
-
             matched += 1
 
+    # personas con el mismo nombre pero edades distintas = personas distintas:
+    # se separan por doc para no fusionar voces de referencia diferentes
+    for base, ages in ages_por_persona.items():
+        if len(ages) > 1:
+            for r in metadata_rows:
+                if r["speaker_id"] == base:
+                    r["speaker_id"] = f"{base}@{r['short_name']}"
+
+    metadata_fieldnames = ["short_name", "utt_num", "speaker_id", "speaker_code",
+                           "nombre", "edad", "sexo", "texto", "archivo", "duracion"]
     csv_path = os.path.join(out_dir, "metadata.csv")
     with open(csv_path, "w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["short_name", "utt_num", "edad", "sexo", "texto", "archivo"])
+        writer = csv.DictWriter(f, fieldnames=metadata_fieldnames)
         writer.writeheader()
         writer.writerows(metadata_rows)
-    print(f"  Metadata: {csv_path}", flush=True)
+    print(f"  Metadata: {csv_path} ({len(metadata_rows)} filas)", flush=True)
+
+    # Agregado por persona (voces de referencia)
+    spk = {}
+    for r in metadata_rows:
+        sid = r["speaker_id"]
+        s = spk.setdefault(sid, {"nombre": r["nombre"], "edades": [], "sexos": [],
+                                 "n_clips": 0, "duracion_total": 0.0})
+        s["n_clips"] += 1
+        s["duracion_total"] += float(r["duracion"] or 0)
+        s["edades"].append(r["edad"])
+        s["sexos"].append(r["sexo"])
+    for s in spk.values():
+        s["edad"] = Counter(s["edades"]).most_common(1)[0][0]
+        s["sexo"] = Counter(s["sexos"]).most_common(1)[0][0]
+        s["duracion_total"] = round(s["duracion_total"], 3)
+
+    # edades inconsistentes por persona entre docs
+    conflictos = 0
+    for sid, ages in sorted(ages_por_persona.items()):
+        if len(ages) > 1:
+            conflictos += 1
+            print(f"  AVISO: '{sid}' aparece con edades distintas {sorted(ages)}", flush=True)
+    if conflictos:
+        print(f"  {conflictos} persona(s) con edades inconsistentes entre docs.", flush=True)
+
+    spk_path = os.path.join(out_dir, "speakers.csv")
+    with open(spk_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["speaker_id", "nombre", "edad", "sexo",
+                                               "n_clips", "duracion_total"])
+        writer.writeheader()
+        for sid in sorted(spk):
+            s = spk[sid]
+            writer.writerow({"speaker_id": sid, "nombre": s["nombre"], "edad": s["edad"],
+                             "sexo": s["sexo"], "n_clips": s["n_clips"],
+                             "duracion_total": s["duracion_total"]})
+    print(f"  Speakers: {spk_path} ({len(spk)} voces-referencia)", flush=True)
+
+    # combos (edad, sexo) con poca cobertura de referencia
+    por_combo = defaultdict(lambda: {"clips": 0, "personas": set()})
+    for sid, s in spk.items():
+        c = por_combo[(s["edad"], s["sexo"])]
+        c["clips"] += s["n_clips"]
+        c["personas"].add(sid)
+    print("  Referencias debiles:", flush=True)
+    for combo, v in sorted(por_combo.items()):
+        if v["clips"] <= 10:
+            print(f"    - {combo[0]} anos ({combo[1]}): {v['clips']} clips, "
+                  f"{len(v['personas'])} voz(es)", flush=True)
+        elif len(v["personas"]) == 1:
+            print(f"    - {combo[0]} anos ({combo[1]}): 1 sola voz de referencia "
+                  f"({v['clips']} clips)", flush=True)
+
+    # splits por persona (hablantes completos)
+    eval_frac = max(0.0, min(1.0, eval_frac))
+    train_ids, eval_ids = split_speakers(spk, eval_frac)
+    eval_sids = set(eval_ids)
+    train_lines, eval_lines = [], []
+
+    for r in metadata_rows:
+        sid = r["speaker_id"]
+        text = r["texto"].replace("|", " ").replace("\n", " ").strip()
+        line = f"{r['archivo']}|{text}|{sid}|{r['edad']}|{r['sexo']}"
+        (eval_lines if sid in eval_sids else train_lines).append(line)
+
+    def write_filelist(path, lines):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+
+    write_filelist(os.path.join(out_dir, "train.txt"), train_lines)
+    write_filelist(os.path.join(out_dir, "eval.txt"), eval_lines)
+    print(f"  Splits por persona: train {len(train_ids)} voces / "
+          f"eval {len(eval_ids)} voces ({len(eval_lines)} clips)", flush=True)
 
     try:
         subprocess.run(["taskkill", "/f", "/im", "WINWORD.EXE"], capture_output=True, timeout=5)
@@ -270,4 +408,8 @@ def organize():
     print(f"  Output: {out_dir}", flush=True)
 
 if __name__ == "__main__":
-    organize()
+    parser = argparse.ArgumentParser(description="Organizador de dataset TTS")
+    parser.add_argument("--eval-frac", type=float, default=0.2,
+                        help="Fraccion de voces-referencia para eval (por persona). Default 0.2")
+    args = parser.parse_args()
+    organize(eval_frac=args.eval_frac)
